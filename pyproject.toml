@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lctl"
+version = "0.1.0"
+description = "Control Ulanzi lights over BLE with meeting-aware automation."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "bleak>=0.22.3",
+]
+authors = [{ name = "LightController contributors" }]
+license = { text = "MIT" }
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+
+[project.scripts]
+lctl = "lightcontroller.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
