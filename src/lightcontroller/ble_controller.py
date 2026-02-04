@@ -139,7 +139,7 @@ class BLELight:
         """Handle notifications from the device."""
         logger.debug("Received notification from %s: %s", sender, data.hex())
 
-    async def connect(self) -> None:
+    async def connect(self, max_retries: int = 3, retry_delay: float = 2.0) -> None:
         if self.dry_run:
             logger.debug("dry-run enabled; skipping BLE connection to %s", self.address)
             return
@@ -147,14 +147,57 @@ class BLELight:
             raise RuntimeError("bleak is missing; cannot connect.")
         if self._client and self._client.is_connected:
             return
-        self._client = BleakClient(self.address)
-        await self._client.connect()
-        logger.info("Connected to %s", self.address)
-        # Subscribe to notifications to enable 2-way communication
-        await self._client.start_notify(self.notify_characteristic, self._notification_handler)
-        logger.debug("Subscribed to notifications on %s", self.notify_characteristic)
-        # Wait after subscribing before sending commands
-        await asyncio.sleep(0.05)
+
+        last_error: Optional[Exception] = None
+        had_in_progress_error = False
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                self._client = BleakClient(self.address)
+                logger.debug("Connection attempt %d/%d to %s", attempt, max_retries, self.address)
+                await self._client.connect()
+                logger.info("Connected to %s", self.address)
+                # Subscribe to notifications to enable 2-way communication
+                await self._client.start_notify(self.notify_characteristic, self._notification_handler)
+                logger.debug("Subscribed to notifications on %s", self.notify_characteristic)
+                # Wait after subscribing before sending commands - device needs time to stabilize
+                await asyncio.sleep(0.2)
+                # Verify connection is still active
+                if not self._client.is_connected:
+                    raise RuntimeError("Connection dropped after subscribe")
+                return  # Success
+            except Exception as e:
+                last_error = e
+                error_str = str(e)
+                logger.warning(
+                    "Connection attempt %d/%d to %s failed: %s",
+                    attempt, max_retries, self.address, e
+                )
+
+                # Track if we hit an InProgress error
+                if "InProgress" in error_str:
+                    had_in_progress_error = True
+
+                # Clean up failed connection attempt
+                if self._client:
+                    try:
+                        await self._client.disconnect()
+                    except Exception:
+                        pass
+                    self._client = None
+
+                if attempt < max_retries:
+                    # Use longer delay for "InProgress" errors - the BLE stack needs more time
+                    if had_in_progress_error:
+                        delay = retry_delay * (2 ** attempt)  # 4s, 8s, 16s for InProgress
+                        logger.debug("InProgress error - using longer delay %.1fs", delay)
+                    else:
+                        delay = retry_delay * (2 ** (attempt - 1))  # 2s, 4s, 8s normal
+                    logger.debug("Waiting %.1fs before retry...", delay)
+                    await asyncio.sleep(delay)
+
+        # All retries exhausted
+        raise RuntimeError(f"Failed to connect to {self.address} after {max_retries} attempts: {last_error}")
 
     async def disconnect(self) -> None:
         if self.dry_run:
@@ -165,8 +208,13 @@ class BLELight:
                     await self._client.stop_notify(self.notify_characteristic)
                 except Exception:
                     pass  # Best effort cleanup
-            await self._client.disconnect()
-            logger.info("Disconnected from %s", self.address)
+            try:
+                await self._client.disconnect()
+                logger.info("Disconnected from %s", self.address)
+            except EOFError:
+                # DBus connection can close unexpectedly during disconnect.
+                # This is safe to ignore - the light operation already completed.
+                logger.debug("DBus connection closed during disconnect (safe to ignore)")
 
     async def set_power(self, on: bool) -> None:
         if on:
@@ -224,11 +272,13 @@ class BLELight:
             await self.connect()
         if self._client is None:
             raise RuntimeError("BLE client unavailable after connect.")
+        if not self._client.is_connected:
+            raise RuntimeError("BLE connection lost before write.")
         # Characteristic 0xFFF2 is write-without-response; BlueZ rejects response=True.
         try:
             await self._client.write_gatt_char(characteristic, payload, response=False)
             logger.debug("Sent %s to %s", action, characteristic)
-            await asyncio.sleep(0.02)  # Wait between commands
+            await asyncio.sleep(0.05)  # Wait between commands (increased for reliability)
         except Exception as exc:
             logger.error("Failed to write %s to %s: %s", action, characteristic, exc)
             raise
