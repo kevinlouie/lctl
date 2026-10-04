@@ -9,11 +9,22 @@ from .service import MeetingAwareLightService, ServiceConfig
 DEFAULT_BRIGHTNESS = 80
 DEFAULT_COLOR_TEMP = 4000  # Neutral white
 DEFAULT_SCAN_TIMEOUT = 10.0
+MIN_POLL_SECONDS = 0.5  # Each poll forks `ps`; avoid a hot loop
 
 
 def _configure_logging(verbose: bool) -> None:
     level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
+
+def _poll_seconds(value: str) -> float:
+    try:
+        seconds = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"invalid number: {value!r}") from None
+    if not (MIN_POLL_SECONDS <= seconds < float("inf")):
+        raise argparse.ArgumentTypeError(f"must be a finite number of at least {MIN_POLL_SECONDS} seconds")
+    return seconds
 
 
 def main() -> None:
@@ -49,7 +60,12 @@ def main() -> None:
         "auto",
         help="Run a background loop that mirrors meeting activity to the light",
     )
-    auto_parser.add_argument("--poll-seconds", type=float, default=5.0)
+    auto_parser.add_argument(
+        "--poll-seconds",
+        type=_poll_seconds,
+        default=5.0,
+        help=f"Seconds between meeting checks (default: 5.0, minimum: {MIN_POLL_SECONDS})",
+    )
 
     color_temp_parser = subparsers.add_parser(
         "color-temp",
