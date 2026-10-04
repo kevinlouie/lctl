@@ -211,10 +211,11 @@ class BLELight:
             try:
                 await self._client.disconnect()
                 logger.info("Disconnected from %s", self.address)
-            except EOFError:
-                # DBus connection can close unexpectedly during disconnect.
-                # This is safe to ignore - the light operation already completed.
-                logger.debug("DBus connection closed during disconnect (safe to ignore)")
+            except Exception as exc:
+                # Best effort: DBus/BlueZ can fail or close (EOFError) during disconnect.
+                # Don't let cleanup mask the real result of the light operation.
+                logger.debug("Error during disconnect from %s (ignored): %r", self.address, exc)
+            self._client = None
 
     async def set_power(self, on: bool) -> None:
         if on:
