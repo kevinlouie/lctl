@@ -272,8 +272,13 @@ class BLELight:
 
     async def set_state(self, on: bool, brightness: Optional[int] = None) -> None:
         await self.set_power(on)
-        if brightness is not None:
-            await self.set_brightness(brightness)
+        if brightness is None:
+            return
+        if not on:
+            # A brightness write after power-off can wake the light again.
+            logger.warning("Ignoring brightness=%s when turning the light off", brightness)
+            return
+        await self.set_brightness(brightness)
 
     async def _write(self, characteristic: str, payload: bytes, action: str) -> None:
         if self.dry_run:
