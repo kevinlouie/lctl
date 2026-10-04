@@ -15,12 +15,14 @@ Based on the official Ulanzi app, the following lights may be supported:
 - BLE control with power, brightness (0–100), color temperature (2700–6500K), and FX effects (flash/tv/candle/strobe1-3)
 - Dry-run by default; add `--execute` to perform real BLE writes
 - Built-in scanner to discover nearby Ulanzi lights
-- `auto` mode: turns the light on while a Zoom/Google Meet meeting is detected and off afterwards
+- `auto` mode: turns the light on while you're in a call (camera in use, a meeting app's mic open, or a Zoom/Google Meet process) and off afterwards
+- `detect` command: prints what call detection currently sees, without touching the light
 
 ## Requirements
 - Python 3.10+
 - Bluetooth stack that works with [`bleak`](https://github.com/hbldh/bleak) (BlueZ on Linux with `bluetoothd` running)
 - BLE adapter with permission to scan/connect
+- For camera/mic call detection (optional): Linux with `/proc`, and PipeWire with `pactl` (`pipewire-pulse`/`libpulse`, 16+ for `-f json`) and `pw-dump`. Each missing piece just disables that signal.
 
 ## Installation
 ### pipx (recommended)
@@ -69,9 +71,36 @@ pip install -r requirements.txt
   ```bash
   lctl --address AA:BB:CC:DD:EE:FF --execute --brightness 70 auto --poll-seconds 5
   ```
-  Every `--poll-seconds` (default 5, minimum 0.5) it checks the process table for a meeting and switches the light on/off when that changes. BLE errors (light unplugged or out of range) are logged and retried with backoff instead of stopping the loop.
+  Every `--poll-seconds` (default 5, minimum 0.5) it checks whether you're in a call and switches the light on/off when that changes. BLE errors (light unplugged or out of range) are logged and retried with backoff instead of stopping the loop.
 
-  Detection is a process-name heuristic: the Zoom desktop app (`zoom` / `zoom.us`), or a browser started with a meeting URL on its command line (e.g. a Google Meet app window: `chromium --app=https://meet.google.com/...`). A Meet tab in an already-running browser is not visible to `ps` and won't be detected. Note that the Zoom app counts as "in a meeting" whenever it is running.
+  You count as in a call if **any** of these is true (checked cheapest first, stopping at the first hit):
+
+  1. **Meeting process**: the Zoom desktop app (`zoom` / `zoom.us`), or a browser started with a meeting URL on its command line (e.g. a Google Meet app window: `chromium --app=https://meet.google.com/...`). The Zoom app counts whenever it is running.
+  2. **Microphone** (`pactl -f json list source-outputs`): a meeting app has a capture stream open — **muted or not**, since muting in Slack/Meet usually keeps the stream. Default apps: `slack`, `zoom`, `zoom.us`, `teams`, `teams-for-linux`, and the common browsers (Chrome/Chromium, Brave, Edge, Vivaldi, Firefox). Matched exactly (case-insensitive) on the stream's process binary or application name. Server-internal streams (loopbacks, monitors) and pavucontrol's level meters are ignored.
+  3. **Camera**: any process has a `/dev/video*` device open (via `/proc/<pid>/fd`; only your own processes are visible, PipeWire's daemons are ignored), or a PipeWire `Video/Source` node is `running` (`pw-dump`) — the latter catches apps that use the camera through PipeWire/the portal.
+
+  This catches Slack huddles and Meet/Zoom/Teams tabs in an already-open browser, which the process check alone can't see.
+
+  Options (also accepted by `detect`):
+  - `--no-camera`: ignore camera use.
+  - `--no-mic`: ignore microphone streams.
+  - `--mic-app NAME`: also count mic streams from `NAME` (repeatable), e.g. `--mic-app discord --mic-app lark`. Run `pactl list source-outputs` during a call to find an app's `application.process.binary`.
+
+  False positives to expect:
+  - Any app using the camera turns the light on (e.g. a webcam test or Cheese) — intended.
+  - A browser counts whenever any page holds the mic: voice typing, a site's voice search, a web recorder.
+  - Discord isn't in the default list since people idle in voice channels for hours; add it with `--mic-app discord` if you want it.
+
+- Check what detection sees right now (no BLE; exits 0 when in a call, 1 otherwise):
+  ```bash
+  lctl detect
+  lctl -v detect --mic-app discord   # -v also logs which signals are unavailable
+  ```
+  Example output while Slack has the mic open (e.g. in a huddle):
+  ```
+  mic: slack
+      Slack (pid 29545)
+  ```
 
 ## BLE protocol (observed)
 - Service `0xFFF0`
@@ -86,6 +115,7 @@ pip install -r requirements.txt
 
 ## Notes
 - The service keeps a cached on/off state and lazily reconnects through `bleak` when needed.
+- Run the tests with `PYTHONPATH=src python3 -m unittest discover -s tests`.
 
 ## Disclaimer
 This project is not affiliated with or endorsed by Ulanzi. Use at your own risk.
