@@ -4,12 +4,13 @@ import logging
 import sys
 
 from .ble_controller import BLELight, LightEffect, run_sync, scan_for_lights, toggle_light
+from .call_detector import DEFAULT_MIC_APPS, DetectionConfig, detect_calls
 from .service import MeetingAwareLightService, ServiceConfig
 
 DEFAULT_BRIGHTNESS = 80
 DEFAULT_COLOR_TEMP = 4000  # Neutral white
 DEFAULT_SCAN_TIMEOUT = 10.0
-MIN_POLL_SECONDS = 0.5  # Each poll forks `ps`; avoid a hot loop
+MIN_POLL_SECONDS = 0.5  # Each poll forks `ps`/`pactl`/`pw-dump`; avoid a hot loop
 
 
 def _configure_logging(verbose: bool) -> None:
@@ -25,6 +26,14 @@ def _poll_seconds(value: str) -> float:
     if not (MIN_POLL_SECONDS <= seconds < float("inf")):
         raise argparse.ArgumentTypeError(f"must be a finite number of at least {MIN_POLL_SECONDS} seconds")
     return seconds
+
+
+def _detection_config(args: argparse.Namespace) -> DetectionConfig:
+    return DetectionConfig(
+        camera=args.camera,
+        mic=args.mic,
+        mic_apps=DEFAULT_MIC_APPS + tuple(args.mic_apps),
+    )
 
 
 def main() -> None:
@@ -56,8 +65,32 @@ def main() -> None:
 
     subparsers.add_parser("off", help="Turn the light off")
 
+    # Call-detection options shared by `auto` and `detect`.
+    detection_parser = argparse.ArgumentParser(add_help=False)
+    detection_parser.add_argument(
+        "--no-camera",
+        dest="camera",
+        action="store_false",
+        help="Don't treat an in-use camera as a call",
+    )
+    detection_parser.add_argument(
+        "--no-mic",
+        dest="mic",
+        action="store_false",
+        help="Don't treat a meeting app's open microphone stream as a call",
+    )
+    detection_parser.add_argument(
+        "--mic-app",
+        dest="mic_apps",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="Also count microphone streams from this app (binary or application name; repeatable)",
+    )
+
     auto_parser = subparsers.add_parser(
         "auto",
+        parents=[detection_parser],
         help="Run a background loop that mirrors meeting activity to the light",
     )
     auto_parser.add_argument(
@@ -65,6 +98,12 @@ def main() -> None:
         type=_poll_seconds,
         default=5.0,
         help=f"Seconds between meeting checks (default: 5.0, minimum: {MIN_POLL_SECONDS})",
+    )
+
+    subparsers.add_parser(
+        "detect",
+        parents=[detection_parser],
+        help="Print what call detection currently sees (no BLE; exit 0 if in a call, 1 if not)",
     )
 
     color_temp_parser = subparsers.add_parser(
@@ -117,12 +156,22 @@ def main() -> None:
             brightness=brightness,
             poll_seconds=args.poll_seconds,
             dry_run=args.dry_run,
+            detection=_detection_config(args),
         )
         service = MeetingAwareLightService(config)
         try:
             asyncio.run(service.run_forever())
         except KeyboardInterrupt:
             pass
+    elif args.command == "detect":
+        detections = detect_calls(_detection_config(args), find_all=True)
+        if not detections:
+            print("No call detected.")
+            sys.exit(1)
+        for detection in detections:
+            print(detection.source)
+            # Browser command lines run to kilobytes; the start identifies the process.
+            print(f"    {detection.process_line[:160]}")
     elif args.command == "color-temp":
         async def set_color_temp():
             async with BLELight(address=args.address, dry_run=args.dry_run) as light:
