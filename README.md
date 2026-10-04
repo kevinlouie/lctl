@@ -15,6 +15,7 @@ Based on the official Ulanzi app, the following lights may be supported:
 - BLE control with power, brightness (0–100), color temperature (2700–6500K), and FX effects (flash/tv/candle/strobe1-3)
 - Dry-run by default; add `--execute` to perform real BLE writes
 - Built-in scanner to discover nearby Ulanzi lights
+- `auto` mode: turns the light on while a Zoom/Google Meet meeting is detected and off afterwards
 
 ## Requirements
 - Python 3.10+
@@ -40,28 +41,37 @@ pip install -r requirements.txt
 ```
 
 ## Usage
-The CLI defaults to dry-run logging. Add `--execute` to send real BLE commands.
+> **Dry-run is the default.** Without `--execute` the CLI only logs the BLE commands it *would* send and the light does nothing. Global options (`--address`, `--execute`, `--brightness`, `-v`) go before the subcommand.
 
 - Scan for lights (prints address, name, RSSI):
   ```bash
   lctl scan --timeout 15
   ```
 
-- Turn on/off (on defaults to 80% brightness unless overridden):
+- Turn on/off (on defaults to 80% brightness unless overridden; brightness is ignored for off):
   ```bash
-  lctl --address AA:BB:CC:DD:EE:FF on
-  lctl --address AA:BB:CC:DD:EE:FF --brightness 40 off
+  lctl --address AA:BB:CC:DD:EE:FF --execute on
+  lctl --address AA:BB:CC:DD:EE:FF --execute --brightness 40 on
+  lctl --address AA:BB:CC:DD:EE:FF --execute off
   ```
 
 - Set color temperature (optionally set brightness too):
   ```bash
-  lctl --address AA:BB:CC:DD:EE:FF --brightness 60 color-temp 3400
+  lctl --address AA:BB:CC:DD:EE:FF --execute --brightness 60 color-temp 3400
   ```
 
 - FX effects (flash, tv, candle, strobe1-3):
   ```bash
   lctl --address AA:BB:CC:DD:EE:FF --execute effect candle
   ```
+
+- Meeting-aware auto mode (runs until Ctrl-C):
+  ```bash
+  lctl --address AA:BB:CC:DD:EE:FF --execute --brightness 70 auto --poll-seconds 5
+  ```
+  Every `--poll-seconds` (default 5, minimum 0.5) it checks the process table for a meeting and switches the light on/off when that changes. BLE errors (light unplugged or out of range) are logged and retried with backoff instead of stopping the loop.
+
+  Detection is a process-name heuristic: the Zoom desktop app (`zoom` / `zoom.us`), or a browser started with a meeting URL on its command line (e.g. a Google Meet app window: `chromium --app=https://meet.google.com/...`). A Meet tab in an already-running browser is not visible to `ps` and won't be detected. Note that the Zoom app counts as "in a meeting" whenever it is running.
 
 ## BLE protocol (observed)
 - Service `0xFFF0`
