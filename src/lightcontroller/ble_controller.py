@@ -50,6 +50,15 @@ class DiscoveredLight:
     rssi: int
 
 
+def _sanitize_name(name: str) -> str:
+    """Replace non-printable characters in an advertised name.
+
+    Names come from any nearby advertiser; printing them raw would let it
+    inject terminal escape sequences.
+    """
+    return "".join(ch if ch.isprintable() else "?" for ch in name)
+
+
 async def scan_for_lights(timeout: float = 10.0) -> list[DiscoveredLight]:
     """
     Scan for Ulanzi lights on the BLE network.
@@ -83,6 +92,7 @@ async def scan_for_lights(timeout: float = 10.0) -> list[DiscoveredLight]:
 
         if has_ulanzi_service or name.startswith(ULANZI_NAME_PREFIX):
             rssi = adv_data.rssi if adv_data.rssi is not None else -100
+            name = _sanitize_name(name)
             discovered.append(DiscoveredLight(
                 address=device.address,
                 name=name,
