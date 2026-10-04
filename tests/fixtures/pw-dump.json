@@ -1,0 +1,68 @@
+[
+  {
+    "id": 0,
+    "type": "PipeWire:Interface:Core",
+    "version": 4,
+    "permissions": ["r", "w", "x", "m"],
+    "info": {
+      "name": "pipewire-0",
+      "props": {"core.name": "pipewire-0"}
+    }
+  },
+  {
+    "id": 57,
+    "type": "PipeWire:Interface:Node",
+    "version": 3,
+    "permissions": ["r", "w", "x", "m"],
+    "info": {
+      "state": "running",
+      "error": null,
+      "props": {
+        "media.class": "Audio/Source",
+        "node.name": "alsa_input.pci-0000_c1_00.6.HiFi__Mic1__source",
+        "node.description": "Ryzen HD Audio Controller Digital Microphone"
+      }
+    }
+  },
+  {
+    "id": 141,
+    "type": "PipeWire:Interface:Node",
+    "version": 3,
+    "permissions": ["r", "w", "x", "m"],
+    "info": {
+      "state": "running",
+      "error": null,
+      "props": {
+        "api.v4l2.path": "/dev/video0",
+        "device.api": "v4l2",
+        "media.class": "Video/Source",
+        "media.role": "Camera",
+        "node.description": "Laptop Webcam Module (2nd Gen) (V4L2)",
+        "node.name": "v4l2_input.pci-0000_c3_00.0-usb-0_3_1.0"
+      }
+    }
+  },
+  {
+    "id": 142,
+    "type": "PipeWire:Interface:Node",
+    "version": 3,
+    "permissions": ["r", "w", "x", "m"],
+    "info": {
+      "state": "suspended",
+      "error": null,
+      "props": {
+        "media.class": "Video/Source",
+        "node.description": "USB Camera (V4L2)",
+        "node.name": "v4l2_input.usb-camera"
+      }
+    }
+  },
+  {
+    "id": 200,
+    "type": "PipeWire:Interface:Metadata",
+    "version": 3,
+    "permissions": ["r", "w", "x", "m"],
+    "props": {"metadata.name": "default"},
+    "metadata": []
+  }
+]

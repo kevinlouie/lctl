@@ -1,0 +1,104 @@
+[
+  {
+    "index": 101,
+    "driver": "PipeWire",
+    "owner_module": null,
+    "client": "100",
+    "source": 57,
+    "corked": true,
+    "mute": true,
+    "properties": {
+      "client.api": "pipewire-pulse",
+      "application.name": "Slack",
+      "media.name": "RecordStream",
+      "application.process.id": "29545",
+      "application.process.binary": "slack",
+      "media.class": "Stream/Input/Audio",
+      "node.name": "Slack"
+    }
+  },
+  {
+    "index": 102,
+    "driver": "PipeWire",
+    "owner_module": null,
+    "client": "110",
+    "source": 57,
+    "corked": false,
+    "mute": false,
+    "properties": {
+      "client.api": "pipewire-pulse",
+      "application.name": "Chromium input",
+      "media.name": "Chromium input",
+      "application.process.id": "4242",
+      "application.process.binary": "chromium",
+      "media.class": "Stream/Input/Audio"
+    }
+  },
+  {
+    "index": 103,
+    "driver": "PipeWire",
+    "owner_module": null,
+    "client": "120",
+    "source": 57,
+    "corked": false,
+    "mute": false,
+    "properties": {
+      "client.api": "pipewire-pulse",
+      "application.name": "parecord",
+      "media.name": "/dev/null",
+      "application.process.id": "1955590",
+      "application.process.binary": "pacat",
+      "media.class": "Stream/Input/Audio"
+    }
+  },
+  {
+    "index": 104,
+    "driver": "PipeWire",
+    "owner_module": null,
+    "client": "130",
+    "source": 56,
+    "corked": false,
+    "mute": false,
+    "properties": {
+      "client.api": "pipewire-pulse",
+      "application.name": "Google Chrome",
+      "media.name": "Peak detect",
+      "application.process.id": "5000",
+      "application.process.binary": "chrome",
+      "stream.monitor": "true",
+      "media.class": "Stream/Input/Audio"
+    }
+  },
+  {
+    "index": 105,
+    "driver": "PipeWire",
+    "owner_module": null,
+    "client": "140",
+    "source": 57,
+    "corked": false,
+    "mute": false,
+    "properties": {
+      "application.name": "Volume Control",
+      "application.id": "org.PulseAudio.pavucontrol",
+      "media.name": "Peak detect",
+      "application.process.id": "6000",
+      "application.process.binary": "pavucontrol",
+      "media.class": "Stream/Input/Audio"
+    }
+  },
+  {
+    "index": 106,
+    "driver": "PipeWire",
+    "owner_module": "27",
+    "client": null,
+    "source": 57,
+    "corked": false,
+    "mute": false,
+    "properties": {
+      "application.name": "slack",
+      "media.name": "loopback-27",
+      "node.name": "input.loopback",
+      "media.class": "Stream/Input/Audio"
+    }
+  }
+]

@@ -1,9 +1,9 @@
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .ble_controller import BLELight
-from .meeting_detector import is_meeting_active
+from .call_detector import DetectionConfig, detect_calls
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +17,7 @@ class ServiceConfig:
     brightness: int = 80
     poll_seconds: float = 5.0
     dry_run: bool = True
+    detection: DetectionConfig = field(default_factory=DetectionConfig)
 
 
 class MeetingAwareLightService:
@@ -31,11 +32,14 @@ class MeetingAwareLightService:
         self._light_on: bool | None = False
 
     async def run_forever(self) -> None:
+        detection = self.config.detection
         logger.info(
-            "Starting meeting watcher (poll=%.1fs, brightness=%s, dry_run=%s)",
+            "Starting meeting watcher (poll=%.1fs, brightness=%s, dry_run=%s, camera=%s, mic=%s)",
             self.config.poll_seconds,
             self.config.brightness,
             self.config.dry_run,
+            detection.camera,
+            detection.mic,
         )
         failures = 0
         try:
@@ -61,9 +65,10 @@ class MeetingAwareLightService:
             await self.light.disconnect()
 
     async def _tick(self) -> None:
-        active = is_meeting_active()
+        detections = detect_calls(self.config.detection)
+        active = bool(detections)
         if active and self._light_on is not True:
-            logger.info("Meeting detected; turning light on")
+            logger.info("Meeting detected (%s); turning light on", detections[0].source)
             self._light_on = None
             await self.light.set_power(True)
             # Record power state before the brightness write so a failure there
