@@ -32,7 +32,7 @@ pipx install .
 
 Reinstall after local changes:
 ```bash
-pipx reinstall --force .
+pipx install --force .
 ```
 
 ### Virtualenv
