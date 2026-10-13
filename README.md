@@ -17,6 +17,7 @@ Based on the official Ulanzi app, the following lights may be supported:
 - Built-in scanner to discover nearby Ulanzi lights
 - `auto` mode: turns the light on while you're in a call (camera in use, a meeting app's mic open, or a Zoom/Google Meet process) and off afterwards
 - `detect` command: prints what call detection currently sees, without touching the light
+- `daemon` service: event-driven call light (mic changes react instantly) with saved settings, a JSON state file, hooks, and an [Omarchy](https://omarchy.org/) bar widget
 
 ## Requirements
 - Python 3.10+
@@ -77,7 +78,7 @@ pip install -r requirements.txt
 
   1. **Meeting process**: the Zoom desktop app (`zoom` / `zoom.us`), or a browser started with a meeting URL on its command line (e.g. a Google Meet app window: `chromium --app=https://meet.google.com/...`). The Zoom app counts whenever it is running.
   2. **Microphone** (`pactl -f json list source-outputs`): a meeting app has a capture stream open — **muted or not**, since muting in Slack/Meet usually keeps the stream. Default apps: `slack`, `zoom`, `zoom.us`, `teams`, `teams-for-linux`, and the common browsers (Chrome/Chromium, Brave, Edge, Vivaldi, Firefox). Matched exactly (case-insensitive) on the stream's process binary or application name. Server-internal streams (loopbacks, monitors) and pavucontrol's level meters are ignored.
-  3. **Camera**: any process has a `/dev/video*` device open (via `/proc/<pid>/fd`; only your own processes are visible, PipeWire's daemons are ignored), or a PipeWire `Video/Source` node is `running` (`pw-dump`) — the latter catches apps that use the camera through PipeWire/the portal.
+  3. **Camera**: any process is streaming from a `/dev/video*` device (an open fd in `/proc/<pid>/fd` with its buffers mapped in `/proc/<pid>/maps`, so apps that only probe the camera for a permission check or device list don't count; only your own processes are visible, PipeWire's daemons are ignored), or a PipeWire `Video/Source` node is `running` (`pw-dump`) — the latter catches apps that use the camera through PipeWire/the portal.
 
   This catches Slack huddles and Meet/Zoom/Teams tabs in an already-open browser, which the process check alone can't see.
 
@@ -101,6 +102,45 @@ pip install -r requirements.txt
   mic: slack
       Slack (pid 29545)
   ```
+
+## Daemon and Omarchy bar widget
+`lctl daemon` is the always-on version of `auto`, meant to run as a systemd user service. It owns the BLE connection and reads its settings from `~/.config/lctl/config.json`:
+
+- **Mode** `auto` turns the light on during a call and off once nothing has been detected for `off_delay_seconds` (default 8). `on`/`off` pin the light and pause call detection.
+- **Mic** changes are event driven (`pactl subscribe`), so opening a mic in Slack/Meet/Zoom switches the light within about a second. Camera use and meeting processes have no change events and are re-checked every `poll_seconds` (default 5).
+- **State** is published to `$XDG_RUNTIME_DIR/lctl/state.json` (rewritten only on change) for front ends; `lctl status` prints it.
+- **Hooks**: executables at `~/.config/lctl/hooks/light-on` and `light-off` run, detached, after the light switches (e.g. re-apply webcam white balance).
+- Stopping the daemon turns the light off.
+
+Change settings with `lctl set`; a running daemon picks them up immediately (SIGHUP):
+```bash
+lctl set --light AA:BB:CC:DD:EE:FF        # the light to control
+lctl set --mode auto                      # auto | on | off
+lctl set --brightness 40 --color-temp 3400
+lctl status
+```
+Once a light is saved, `on`/`off`/`color-temp`/`effect`/`auto` use it when `--address` is omitted.
+
+Install and start the service:
+```bash
+mkdir -p ~/.config/systemd/user
+cp contrib/lctl.service ~/.config/systemd/user/
+systemctl --user enable --now lctl.service
+```
+
+### Omarchy bar widget
+`omarchy/kevin.light` is an Omarchy shell plugin that mirrors the built-in panels: a bulb in the bar (lit while the light is on, red during a call, dimmed while the daemon is stopped) and a panel with
+
+- a switch that starts/stops (and enables/disables) `lctl.service`, so detection and Bluetooth stop entirely while you're away;
+- On / Auto / Off mode;
+- brightness and warmth sliders;
+- a light picker listing Ulanzi lights BlueZ knows about, with a scan button.
+
+Right-click the bulb to start/stop the service. In the panel, `a`/`o`/`f` pick a mode and `l` toggles the service. Install (Omarchy rejects symlinked plugins, so copy):
+```bash
+cp -r omarchy/kevin.light ~/.config/omarchy/plugins/
+omarchy plugin enable kevin.light --section right
+```
 
 ## BLE protocol (observed)
 - Service `0xFFF0`
