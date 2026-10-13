@@ -1,0 +1,12 @@
+[Unit]
+Description=Ulanzi light controller (lctl daemon)
+Documentation=https://github.com/kevinlouie/lctl
+After=pipewire-pulse.service bluetooth.target
+
+[Service]
+ExecStart=%h/.local/bin/lctl daemon
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
