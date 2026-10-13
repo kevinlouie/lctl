@@ -1,10 +1,15 @@
 import argparse
 import asyncio
+import json
 import logging
+import os
+import signal
 import sys
 
 from .ble_controller import BLELight, LightEffect, run_sync, scan_for_lights, toggle_light
 from .call_detector import DEFAULT_MIC_APPS, DetectionConfig, detect_calls
+from .config import MODES, load_settings, read_state, save_settings
+from .daemon import LightDaemon
 from .service import MeetingAwareLightService, ServiceConfig
 
 DEFAULT_BRIGHTNESS = 80
@@ -34,6 +39,43 @@ def _detection_config(args: argparse.Namespace) -> DetectionConfig:
         mic=args.mic,
         mic_apps=DEFAULT_MIC_APPS + tuple(args.mic_apps),
     )
+
+
+def _signal_daemon() -> bool:
+    """Ask a running `lctl daemon` to re-read its settings. True if one was told."""
+    state = read_state()
+    pid = state.get("pid") if state and state.get("running") else None
+    if not isinstance(pid, int):
+        return False
+    # The pid comes from a file; make sure it still belongs to an lctl daemon.
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            argv = f.read().split(b"\0")
+    except OSError:
+        return False
+    # Interpreter flags (pipx's shebang adds -E) shift where the script lands.
+    if b"daemon" not in argv or not any(arg == b"lctl" or arg.endswith(b"/lctl") for arg in argv):
+        return False
+    try:
+        os.kill(pid, signal.SIGHUP)
+    except OSError:
+        return False
+    return True
+
+
+def _set_settings(args: argparse.Namespace) -> None:
+    settings = load_settings()
+    if args.light is not None:
+        settings.address = args.light.upper() or None
+    if args.mode is not None:
+        settings.mode = args.mode
+    if args.brightness is not None:
+        settings.brightness = args.brightness
+    if args.color_temp is not None:
+        settings.color_temp = args.color_temp
+    save_settings(settings)
+    if not _signal_daemon():
+        print("Saved; lctl daemon is not running.", file=sys.stderr)
 
 
 def main() -> None:
@@ -106,6 +148,28 @@ def main() -> None:
         help="Print what call detection currently sees (no BLE; exit 0 if in a call, 1 if not)",
     )
 
+    daemon_parser = subparsers.add_parser(
+        "daemon",
+        help="Run the light controller service (settings from `lctl set`, state for the bar plugin)",
+    )
+    daemon_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Log BLE writes instead of sending them",
+    )
+
+    set_parser = subparsers.add_parser(
+        "set",
+        help="Change saved settings; a running daemon applies them immediately",
+    )
+    set_parser.add_argument("--mode", choices=MODES, help="auto: follow calls; on/off: pin the light")
+    set_parser.add_argument("--light", metavar="ADDRESS", help="BLE address of the light ('' to clear)")
+    set_parser.add_argument("--color-temp", type=int, metavar="KELVIN", help="Color temperature (2700-6500)")
+    # `--brightness` is the global option, so `lctl --brightness 40 set` works too.
+    set_parser.add_argument("--brightness", dest="set_brightness", type=int, metavar="PERCENT", help="Brightness (0-100)")
+
+    subparsers.add_parser("status", help="Print the daemon's current state as JSON")
+
     color_temp_parser = subparsers.add_parser(
         "color-temp",
         help="Set color temperature in Kelvin (2700-6500)",
@@ -142,7 +206,12 @@ def main() -> None:
     # Validate that --address is provided for commands that need it
     commands_requiring_address = {"on", "off", "auto", "color-temp", "effect"}
     if args.command in commands_requiring_address and not args.address:
-        parser.error(f"--address is required for the '{args.command}' command")
+        try:
+            args.address = load_settings().address
+        except (OSError, ValueError, TypeError):
+            args.address = None
+        if not args.address:
+            parser.error(f"--address is required for the '{args.command}' command (or save one with `lctl set --light`)")
     _configure_logging(args.verbose)
 
     if args.command in {"on", "off"}:
@@ -163,6 +232,18 @@ def main() -> None:
             asyncio.run(service.run_forever())
         except KeyboardInterrupt:
             pass
+    elif args.command == "daemon":
+        asyncio.run(LightDaemon(dry_run=args.dry_run).run())
+    elif args.command == "set":
+        if args.set_brightness is not None:
+            args.brightness = args.set_brightness
+        try:
+            _set_settings(args)
+        except (OSError, ValueError, TypeError) as exc:
+            parser.error(str(exc))
+    elif args.command == "status":
+        state = read_state()
+        print(json.dumps(state or {"running": False}, indent=2))
     elif args.command == "detect":
         detections = detect_calls(_detection_config(args), find_all=True)
         if not detections:
