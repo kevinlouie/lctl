@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "id": "kevin.light",
+  "name": "Light",
+  "version": "1.0.0",
+  "author": "Kevin",
+  "license": "MIT",
+  "description": "Ulanzi call light: lctl daemon on/off, mode, brightness, warmth, and light picker.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Light",
+    "description": "Bulb icon that lights up with the Ulanzi light and turns red during a call. Panel controls the lctl daemon.",
+    "category": "Devices",
+    "aliases": [
+      "lctl",
+      "ulanzi",
+      "call-light"
+    ],
+    "allowMultiple": false
+  }
+}
