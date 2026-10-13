@@ -4,8 +4,8 @@ Complements the process/URL heuristic in `meeting_detector`, which can't see a
 Slack huddle (Slack is always running) or a Meet tab in an already-open
 browser. Signals, each best-effort - a missing tool or /proc just disables it:
 
-- camera: any process holding a /dev/video* fd, or a PipeWire video source node
-  in the "running" state;
+- camera: any process streaming from a /dev/video* device, or a PipeWire video
+  source node in the "running" state;
 - mic: a meeting app (see DEFAULT_MIC_APPS) with a capture stream open on the
   PulseAudio/PipeWire server, whether or not it is muted.
 """
@@ -145,8 +145,22 @@ def _read_proc_text(path: str) -> str:
         return ""
 
 
+def _maps_video_device(proc_dir: str) -> bool:
+    """Whether the process has a video device's buffers mapped, i.e. is streaming.
+
+    Browsers and Electron apps open /dev/video* briefly just to enumerate
+    devices and query capabilities (e.g. on a permission check); only actual
+    capture mmaps the V4L2 buffers.
+    """
+    try:
+        with open(os.path.join(proc_dir, "maps"), "rb") as f:
+            return any(b" /dev/video" in line for line in f)
+    except OSError:
+        return False
+
+
 def find_camera_fds(proc_root: str = "/proc") -> List[DetectionResult]:
-    """Processes (readable by this user) with a /dev/video* device open."""
+    """Processes (readable by this user) streaming from a /dev/video* device."""
     try:
         pids = [entry for entry in os.listdir(proc_root) if entry.isdigit()]
     except OSError as exc:
@@ -172,6 +186,8 @@ def find_camera_fds(proc_root: str = "/proc") -> List[DetectionResult]:
             continue
         name = _read_proc_text(os.path.join(proc_root, pid, "comm"))
         if name in CAMERA_FD_IGNORED_PROCESSES:
+            continue
+        if not _maps_video_device(os.path.join(proc_root, pid)):
             continue
         matches.append(
             DetectionResult(

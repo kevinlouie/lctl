@@ -85,15 +85,19 @@ class FindCameraFdsTest(unittest.TestCase):
         self.proc = tempfile.TemporaryDirectory()
         self.addCleanup(self.proc.cleanup)
 
-    def _process(self, pid, comm, fds, cmdline=None):
+    def _process(self, pid, comm, fds, cmdline=None, streaming=True):
         root = Path(self.proc.name, str(pid))
         (root / "fd").mkdir(parents=True)
         (root / "comm").write_text(comm + "\n")
         (root / "cmdline").write_bytes(((cmdline or comm) + "\0").replace(" ", "\0").encode())
+        maps = ["7f0000000000-7f0000001000 r-xp 00000000 103:02 1234   /usr/lib/libc.so.6"]
         for fd, target in enumerate(fds):
             os.symlink(target, root / "fd" / str(fd))
+            if streaming and target.startswith("/dev/video"):
+                maps.append(f"7f1000000000-7f1000300000 rw-s 00000000 00:06 900   {target}")
+        (root / "maps").write_text("\n".join(maps) + "\n")
 
-    def test_finds_processes_holding_a_video_device(self):
+    def test_finds_processes_streaming_from_a_video_device(self):
         self._process(100, "chrome", ["/dev/null", "/dev/video0"], cmdline="/opt/chrome/chrome --type=utility")
         self._process(200, "bash", ["/dev/pts/1"])
         self._process(300, "pipewire", ["/dev/video0"])
@@ -106,6 +110,11 @@ class FindCameraFdsTest(unittest.TestCase):
             [(r.source, r.process_line) for r in results],
             [("camera: chrome (/dev/video0)", "/opt/chrome/chrome --type=utility")],
         )
+
+    def test_open_but_not_streaming_device_is_not_a_call(self):
+        # Device enumeration / permission checks open the device without mapping buffers.
+        self._process(100, "slack", ["/dev/video0"], streaming=False)
+        self.assertEqual(find_camera_fds(self.proc.name), [])
 
     def test_unreadable_or_vanished_processes_are_skipped(self):
         Path(self.proc.name, "400").mkdir()  # no fd dir, like a pid that just exited
