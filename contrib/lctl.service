@@ -1,12 +1,14 @@
 [Unit]
 Description=Ulanzi light controller (lctl daemon)
 Documentation=https://github.com/kevinlouie/lctl
-After=pipewire-pulse.service bluetooth.target
+After=pipewire-pulse.service
 
 [Service]
 ExecStart=%h/.local/bin/lctl daemon
 Restart=on-failure
 RestartSec=5
+# Shutdown turns the light off with bounded timeouts (well under this).
+TimeoutStopSec=30
 
 [Install]
 WantedBy=default.target
