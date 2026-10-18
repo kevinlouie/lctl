@@ -12,8 +12,9 @@ no change events, so they are re-checked every `poll_seconds`.
 
 Settings come from `config.json` and are re-read on SIGHUP (`lctl set` sends
 it). Executables named `light-on` / `light-off` in the `hooks` directory next
-to it run (detached) after the light switches. What the daemon is doing is published to `state.json`, rewritten only
-when something changes, for front ends to watch.
+to it run (detached) after the light switches. What the daemon is doing is
+published to `state.json`, rewritten only when something changes, for front
+ends to watch.
 """
 
 import asyncio
@@ -21,6 +22,7 @@ import logging
 import os
 import signal
 import subprocess
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -38,6 +40,17 @@ MAX_BACKOFF_SECONDS = 60.0
 # let turning it off hold up shutdown.
 SHUTDOWN_OFF_TIMEOUT_SECONDS = 8.0
 PACTL_RESTART_SECONDS = 5.0
+
+
+def backoff_seconds(base: float, failures: int, cap: float = MAX_BACKOFF_SECONDS) -> float:
+    """Delay before retry number `failures`: doubling from `base`, capped."""
+    # Clamp the exponent: 2 ** 1024 overflows a float after a long outage.
+    return min(base * 2 ** min(failures, 32), cap)
+
+
+def describe_error(exc: BaseException) -> str:
+    # Timeouts and some BlueZ errors stringify to "".
+    return str(exc) or type(exc).__name__
 
 
 def describe_source(result: DetectionResult) -> dict:
@@ -84,6 +97,10 @@ class LightDaemon:
         self._wake = asyncio.Event()
         self._reload = True
         self._stopping = False
+        self._step_task: asyncio.Task | None = None
+        # Fire-and-forget work (retiring a deselected light) kept referenced
+        # so it isn't garbage collected mid-flight.
+        self._background: set[asyncio.Task] = set()
 
     # ------------------------------------------------------------- lifecycle
 
@@ -99,19 +116,28 @@ class LightDaemon:
                 if self._reload:
                     self._reload = False
                     self._reload_settings()
+                # A task so stop() can cancel it: a BLE connect to a missing
+                # light retries for well over a minute.
+                self._step_task = asyncio.create_task(self.step())
                 try:
-                    await self.step()
+                    await self._step_task
                     failures = 0
                     timeout = self.settings.poll_seconds if self.settings.mode == "auto" else None
+                except asyncio.CancelledError:
+                    if not self._stopping:
+                        raise
+                    break
                 except Exception as exc:
                     # Light unplugged, out of range, BlueZ busy, ... - keep going.
                     failures += 1
-                    timeout = min(self.settings.poll_seconds * 2 ** failures, MAX_BACKOFF_SECONDS)
-                    self._error = f"Light unreachable: {exc}"
-                    logger.error("Light update failed (%s); retrying in %.1fs", exc, timeout)
+                    timeout = backoff_seconds(self.settings.poll_seconds, failures)
+                    self._error = f"Light unreachable: {describe_error(exc)}"
+                    logger.error("Light update failed (%s); retrying in %.1fs", describe_error(exc), timeout)
                     logger.debug("Failure details", exc_info=True)
                     if self.light:
                         await self.light.disconnect()
+                finally:
+                    self._step_task = None
                 self.publish()
                 await self._sleep(timeout)
         finally:
@@ -125,23 +151,24 @@ class LightDaemon:
     def stop(self) -> None:
         self._stopping = True
         self._wake.set()
+        if self._step_task:
+            self._step_task.cancel()
 
     async def _sleep(self, timeout: float | None) -> None:
         try:
             await asyncio.wait_for(self._wake.wait(), timeout)
         except asyncio.TimeoutError:
-            pass
+            # Not woken: leave the event alone so a wake-up that lands right
+            # after the timeout isn't cleared unseen.
+            return
         self._wake.clear()
 
     async def _shutdown(self) -> None:
-        if self.light and self._light_on is not False:
-            try:
-                await asyncio.wait_for(self.light.set_power(False), SHUTDOWN_OFF_TIMEOUT_SECONDS)
-                self._light_on = False
-            except Exception as exc:
-                logger.warning("Could not turn the light off on exit: %s", exc)
         if self.light:
-            await self.light.disconnect()
+            if await self._retire(self.light, turn_off=self._light_on is not False, why="on exit"):
+                self._light_on = False
+        if self._background:
+            await asyncio.wait(self._background, timeout=SHUTDOWN_OFF_TIMEOUT_SECONDS)
         self._sources = []
         self._in_call = False
         self.publish(running=False)
@@ -155,7 +182,7 @@ class LightDaemon:
             logger.error("%s", self._error)
             return
         if settings.address != self.settings.address or self.light is None:
-            old = self.light
+            old, old_on = self.light, self._light_on
             self.light = (
                 self._light_factory(address=settings.address, dry_run=self.dry_run) if settings.address else None
             )
@@ -163,8 +190,8 @@ class LightDaemon:
             self._applied = None
             if old:
                 # Not awaited inline: reload runs between steps, and a stuck
-                # disconnect shouldn't hold up the new light.
-                asyncio.ensure_future(old.disconnect())
+                # light shouldn't hold up the new one.
+                self._spawn(self._retire(old, turn_off=old_on is not False, why="after switching lights"))
         if settings.mode != "auto":
             self._last_detected = None
             self._sources = []
@@ -178,6 +205,29 @@ class LightDaemon:
             settings.brightness,
             settings.color_temp,
         )
+
+    async def _retire(self, light: BLELight, turn_off: bool, why: str) -> bool:
+        """Best-effort, time-bounded power-off (if asked) and disconnect.
+
+        Returns whether the light was turned off.
+        """
+        off = False
+        if turn_off:
+            try:
+                await asyncio.wait_for(light.set_power(False), SHUTDOWN_OFF_TIMEOUT_SECONDS)
+                off = True
+            except Exception as exc:
+                logger.warning("Could not turn the light off %s: %s", why, describe_error(exc))
+        try:
+            await asyncio.wait_for(light.disconnect(), SHUTDOWN_OFF_TIMEOUT_SECONDS)
+        except Exception as exc:
+            logger.warning("Could not disconnect %s: %s", why, describe_error(exc))
+        return off
+
+    def _spawn(self, coro) -> None:
+        task = asyncio.ensure_future(coro)
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
 
     # ------------------------------------------------------------- decisions
 
@@ -243,7 +293,7 @@ class LightDaemon:
         logger.info("Running %s", hook)
         try:
             # Fire and forget: a slow hook (e.g. camera setup) must not hold up the light.
-            subprocess.Popen(
+            proc = subprocess.Popen(
                 [str(hook)],
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
@@ -252,6 +302,9 @@ class LightDaemon:
             )
         except OSError as exc:
             logger.warning("Could not run %s: %s", hook, exc)
+            return
+        # Reap it when it exits so it doesn't linger as a zombie.
+        threading.Thread(target=proc.wait, name=f"hook-{name}", daemon=True).start()
 
     # ------------------------------------------------------------- mic events
 

@@ -8,7 +8,7 @@ import sys
 
 from .ble_controller import BLELight, LightEffect, run_sync, scan_for_lights, toggle_light
 from .call_detector import DEFAULT_MIC_APPS, DetectionConfig, detect_calls
-from .config import MODES, load_settings, read_state, save_settings
+from .config import MODES, daemon_pid, load_settings, read_state, save_settings
 from .daemon import LightDaemon
 from .service import MeetingAwareLightService, ServiceConfig
 
@@ -43,18 +43,8 @@ def _detection_config(args: argparse.Namespace) -> DetectionConfig:
 
 def _signal_daemon() -> bool:
     """Ask a running `lctl daemon` to re-read its settings. True if one was told."""
-    state = read_state()
-    pid = state.get("pid") if state and state.get("running") else None
-    if not isinstance(pid, int):
-        return False
-    # The pid comes from a file; make sure it still belongs to an lctl daemon.
-    try:
-        with open(f"/proc/{pid}/cmdline", "rb") as f:
-            argv = f.read().split(b"\0")
-    except OSError:
-        return False
-    # Interpreter flags (pipx's shebang adds -E) shift where the script lands.
-    if b"daemon" not in argv or not any(arg == b"lctl" or arg.endswith(b"/lctl") for arg in argv):
+    pid = daemon_pid(read_state())
+    if pid is None:
         return False
     try:
         os.kill(pid, signal.SIGHUP)
@@ -242,8 +232,11 @@ def main() -> None:
         except (OSError, ValueError, TypeError) as exc:
             parser.error(str(exc))
     elif args.command == "status":
-        state = read_state()
-        print(json.dumps(state or {"running": False}, indent=2))
+        state = read_state() or {"running": False}
+        # Don't report a crashed daemon as running.
+        if state.get("running") and daemon_pid(state) is None:
+            state["running"] = False
+        print(json.dumps(state, indent=2))
     elif args.command == "detect":
         detections = detect_calls(_detection_config(args), find_all=True)
         if not detections:

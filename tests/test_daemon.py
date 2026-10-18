@@ -5,8 +5,11 @@ import time
 import unittest
 from pathlib import Path
 
-from lightcontroller.config import Settings, load_settings, save_settings
-from lightcontroller.daemon import LightDaemon, describe_source
+from unittest import mock
+
+from lightcontroller import daemon as daemon_module
+from lightcontroller.config import Settings, daemon_pid, load_settings, save_settings
+from lightcontroller.daemon import LightDaemon, backoff_seconds, describe_error, describe_source
 from lightcontroller.meeting_detector import DetectionResult
 
 
@@ -29,6 +32,20 @@ class FakeLight:
 
     async def disconnect(self):
         self.calls.append(("disconnect",))
+
+
+class HangingLight(FakeLight):
+    """A light whose first write never finishes, like a connect to a missing light."""
+
+    def __init__(self, address, dry_run=False):
+        super().__init__(address, dry_run)
+        self.hanging = asyncio.Event()
+
+    async def set_power(self, on):
+        if not self.hanging.is_set():
+            self.hanging.set()
+            await asyncio.Event().wait()
+        await super().set_power(on)
 
 
 class Clock:
@@ -162,6 +179,64 @@ class DaemonTest(unittest.TestCase):
         self.assertEqual(daemon.settings.mode, "on")
         self.assertIn("Bad config", daemon.snapshot()["error"])
 
+    def test_switching_lights_turns_the_old_one_off(self):
+        daemon = self.make_daemon(mode="on")
+
+        async def scenario():
+            await daemon.step()
+            old = daemon.light
+            save_settings(Settings(address="11:22:33:44:55:66", mode="on"), self.config_file)
+            daemon._reload_settings()
+            await asyncio.gather(*daemon._background)
+            return old
+
+        old = asyncio.run(scenario())
+        self.assertEqual(old.calls[-2:], [("power", False), ("disconnect",)])
+        self.assertEqual(daemon.light.address, "11:22:33:44:55:66")
+
+    def test_switching_from_an_off_light_only_disconnects(self):
+        daemon = self.make_daemon(mode="off")
+
+        async def scenario():
+            await daemon.step()
+            old = daemon.light
+            old.calls.clear()
+            save_settings(Settings(address="11:22:33:44:55:66", mode="off"), self.config_file)
+            daemon._reload_settings()
+            await asyncio.gather(*daemon._background)
+            return old
+
+        self.assertEqual(asyncio.run(scenario()).calls, [("disconnect",)])
+
+    def test_stop_interrupts_a_hanging_write(self):
+        save_settings(Settings(address="AA:BB:CC:DD:EE:FF", mode="on"), self.config_file)
+        daemon = LightDaemon(config_file=self.config_file, state_file=self.state_file, light_factory=HangingLight)
+
+        async def no_mic_watch():
+            pass
+
+        daemon._watch_mic_streams = no_mic_watch
+
+        async def scenario():
+            run = asyncio.create_task(daemon.run())
+            while daemon.light is None or not daemon.light.hanging.is_set():
+                await asyncio.sleep(0.01)
+            daemon.stop()
+            # stop() alone must end the run; don't cancel it from outside.
+            done, _ = await asyncio.wait({run}, timeout=2)
+            if not done:
+                run.cancel()
+                self.fail("stop() did not interrupt the hanging write")
+            run.result()
+
+        with mock.patch.object(daemon_module, "SHUTDOWN_OFF_TIMEOUT_SECONDS", 0.5):
+            asyncio.run(scenario())
+        # Shutdown still turned the light off and published that it stopped.
+        self.assertEqual(daemon.light.calls, [("power", False), ("disconnect",)])
+        state = json.loads(self.state_file.read_text())
+        self.assertFalse(state["running"])
+        self.assertFalse(state["lightOn"])
+
     def test_publish_writes_only_on_change(self):
         daemon = self.make_daemon()
         daemon.publish()
@@ -188,6 +263,65 @@ class ConfigTest(unittest.TestCase):
             Settings(brightness=101).validate()
         with self.assertRaises(ValueError):
             Settings(color_temp=2000).validate()
+
+    def test_wrong_types_are_rejected(self):
+        for bad in (
+            {"mic_apps": "slack"},
+            {"brightness": "80"},
+            {"brightness": True},
+            {"camera": "yes"},
+            {"poll_seconds": "5"},
+            {"address": "FOO"},
+            {"address": 12},
+        ):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                Settings(**bad).validate()
+        Settings(address="aa:bb:cc:dd:ee:ff", mic_apps=["discord"], poll_seconds=2).validate()
+
+
+class DaemonPidTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.proc = Path(self.tmp.name)
+
+    def process(self, pid, *argv):
+        (self.proc / str(pid)).mkdir()
+        (self.proc / str(pid) / "cmdline").write_bytes(b"\0".join(arg.encode() for arg in argv) + b"\0")
+
+    def pid(self, state):
+        return daemon_pid(state, proc_root=str(self.proc))
+
+    def test_live_daemon(self):
+        self.process(10, "/usr/bin/python3", "-E", "/home/me/.local/bin/lctl", "daemon")
+        self.process(11, "python", "-m", "lightcontroller.cli", "daemon")
+        self.assertEqual(self.pid({"running": True, "pid": 10}), 10)
+        self.assertEqual(self.pid({"running": True, "pid": 11}), 11)
+
+    def test_stale_or_reused_pid(self):
+        self.process(20, "/usr/bin/firefox")
+        self.process(21, "/home/me/.local/bin/lctl", "status")
+        self.assertIsNone(self.pid({"running": True, "pid": 20}))  # pid reused
+        self.assertIsNone(self.pid({"running": True, "pid": 21}))  # not the daemon
+        self.assertIsNone(self.pid({"running": True, "pid": 99}))  # gone
+        self.assertIsNone(self.pid({"running": False, "pid": 20}))
+        self.assertIsNone(self.pid({"running": True, "pid": True}))
+        self.assertIsNone(self.pid(None))
+
+
+class BackoffTest(unittest.TestCase):
+    def test_doubles_up_to_the_cap(self):
+        self.assertEqual(backoff_seconds(5.0, 1), 10.0)
+        self.assertEqual(backoff_seconds(5.0, 3), 40.0)
+        self.assertEqual(backoff_seconds(5.0, 4), 60.0)
+
+    def test_long_outage_does_not_overflow(self):
+        self.assertEqual(backoff_seconds(5.0, 1024), 60.0)
+        self.assertEqual(backoff_seconds(5.0, 10**6), 60.0)
+
+    def test_describe_error_names_silent_exceptions(self):
+        self.assertEqual(describe_error(asyncio.TimeoutError()), "TimeoutError")
+        self.assertEqual(describe_error(RuntimeError("unreachable")), "unreachable")
 
 
 class DescribeSourceTest(unittest.TestCase):

@@ -53,7 +53,8 @@ class MeetingAwareLightService:
                     # CancelledError/KeyboardInterrupt are BaseException and still stop the loop.
                     failures += 1
                     delay = min(
-                        self.config.poll_seconds * (2 ** failures),
+                        # Clamp the exponent: 2 ** 1024 overflows a float.
+                        self.config.poll_seconds * (2 ** min(failures, 32)),
                         max(self.config.poll_seconds, MAX_BACKOFF_SECONDS),
                     )
                     logger.error("Light update failed (%s); retrying in %.1fs", exc, delay)
