@@ -106,11 +106,16 @@ pip install -r requirements.txt
 ## Daemon and Omarchy bar widget
 `lctl daemon` is the always-on version of `auto`, meant to run as a systemd user service. It owns the BLE connection and reads its settings from `~/.config/lctl/config.json`:
 
+> **Unlike the other commands, `lctl daemon` sends real BLE writes by default.** Use `lctl daemon --dry-run` to only log them.
+
 - **Mode** `auto` turns the light on during a call and off once nothing has been detected for `off_delay_seconds` (default 8). `on`/`off` pin the light and pause call detection.
 - **Mic** changes are event driven (`pactl subscribe`), so opening a mic in Slack/Meet/Zoom switches the light within about a second. Camera use and meeting processes have no change events and are re-checked every `poll_seconds` (default 5).
 - **State** is published to `$XDG_RUNTIME_DIR/lctl/state.json` (rewritten only on change) for front ends; `lctl status` prints it.
 - **Hooks**: executables at `~/.config/lctl/hooks/light-on` and `light-off` run, detached, after the light switches (e.g. re-apply webcam white balance).
-- Stopping the daemon turns the light off.
+- Stopping the daemon turns the light off, and so does switching to another light (the old one goes off).
+- If the light is unreachable the daemon keeps retrying, backing off to once a minute.
+
+`config.json` also accepts keys that `lctl set` doesn't cover (edit the file, then run `lctl set` with no flags to check it and have the daemon re-read it): `camera` / `mic` (true/false, default true), `mic_apps` (extra app names to watch, e.g. `["discord"]`), `poll_seconds` (default 5) and `off_delay_seconds` (default 8). A bad value is reported in `lctl status` and the daemon keeps its last good settings.
 
 Change settings with `lctl set`; a running daemon picks them up immediately (SIGHUP):
 ```bash
